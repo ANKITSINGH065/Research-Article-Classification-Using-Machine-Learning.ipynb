@@ -1,13 +1,54 @@
 from pathlib import Path
+import re
+import sys
+
 import joblib
+import nltk
 import pandas as pd
 import streamlit as st
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+from sklearn.base import BaseEstimator, TransformerMixin
+
+# The saved notebook pipeline refers to __main__.NLPPreprocessor.
+# Define the same class before joblib.load() so that the pickle can resolve it.
+class NLPPreprocessor(BaseEstimator, TransformerMixin):
+    """Explicit NLP: cleaning, tokenization, stop-word removal, lemmatization."""
+    def __init__(self):
+        self.stop_words = set(stopwords.words("english"))
+        self.lemmatizer = WordNetLemmatizer()
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return [self.preprocess(text) for text in X]
+
+    def preprocess(self, text):
+        text = str(text).lower()
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"https?://\S+|www\.\S+", " ", text)
+        text = re.sub(r"[^a-z\s]", " ", text)
+        tokens = text.split()
+        tokens = [
+            self.lemmatizer.lemmatize(token)
+            for token in tokens
+            if token not in self.stop_words and len(token) > 1
+        ]
+        return " ".join(tokens)
+
+# Ensure the custom class is visible under the exact module/name stored in the pickle.
+sys.modules["__main__"].NLPPreprocessor = NLPPreprocessor
 
 st.set_page_config(page_title="Research Article Classification", page_icon="📚", layout="wide")
 MODEL_PATH = Path(__file__).parent / "artifacts" / "best_model.joblib"
 
 @st.cache_resource
 def load_model():
+    # The notebook's NLPPreprocessor uses these NLTK corpora at prediction time.
+    nltk.download("stopwords", quiet=True)
+    nltk.download("wordnet", quiet=True)
+    nltk.download("omw-1.4", quiet=True)
     return joblib.load(MODEL_PATH)
 
 st.title("📚 Research Article Classification")
@@ -21,7 +62,7 @@ if not MODEL_PATH.exists():
 try:
     model = load_model()
 except Exception as exc:
-    st.error("The model could not be loaded. Check the scikit-learn version used during training.")
+    st.error("The model could not be loaded. Check the Python and scikit-learn versions and the model file.")
     st.exception(exc)
     st.stop()
 
@@ -70,7 +111,13 @@ with tab_csv:
                             st.bar_chart(summary.set_index("Predicted category")["Number of abstracts"])
                         st.subheader("Classified dataset")
                         st.dataframe(result, use_container_width=True)
-                        st.download_button("⬇️ Download results as CSV", result.to_csv(index=False).encode("utf-8-sig"), "research_abstracts_predictions.csv", "text/csv", type="primary")
+                        st.download_button(
+                            "⬇️ Download results as CSV",
+                            result.to_csv(index=False).encode("utf-8-sig"),
+                            "research_abstracts_predictions.csv",
+                            "text/csv",
+                            type="primary",
+                        )
         except Exception as exc:
             st.error(f"Could not process this CSV: {exc}")
 
